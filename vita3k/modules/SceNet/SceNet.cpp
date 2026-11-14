@@ -19,6 +19,8 @@
 
 #include <kernel/state.h>
 
+#include <io/state.h>
+#include <net/relay.h>
 #include <net/state.h>
 
 #include <util/lock_and_find.h>
@@ -115,6 +117,42 @@ std::string to_debug_str<SceNetSocketOption>(const MemState &mem, SceNetSocketOp
     case SCE_NET_SO_NAME: return "SCE_NET_SO_NAME";
     }
     return std::to_string(type);
+}
+
+static bool make_relay_config(EmuEnvState &emuenv, net_relay::Config &config) {
+    if (!net_relay::parse_server(emuenv.cfg.adhoc_relay_server, config.host, config.port)) {
+        LOG_ERROR("Ad hoc relay is on but no valid server address is set");
+        return false;
+    }
+    // Players only see each other when they run the same game in the same room
+    const std::string &room = emuenv.cfg.adhoc_relay_room;
+    config.room = emuenv.io.title_id + "/" + (room.empty() ? std::string("public") : room);
+    config.nickname = emuenv.io.user_name;
+    config.key = emuenv.cfg.adhoc_relay_key;
+    return true;
+}
+
+int apply_adhoc_relay(EmuEnvState &emuenv) {
+    net_relay::set_wanted(emuenv.cfg.adhoc_relay);
+    if (!emuenv.cfg.adhoc_relay) {
+        if (net_relay::active())
+            net_relay::stop();
+        return 0;
+    }
+    net_relay::Config config;
+    if (!make_relay_config(emuenv, config)) {
+        net_relay::set_wanted(false);
+        return -1;
+    }
+    std::string error;
+    if (!net_relay::start(config, 8000, error)) {
+        LOG_ERROR("Ad hoc relay: {}", error);
+        net_relay::set_wanted(false); // let the game's sockets fail now instead of each waiting
+        return -1;
+    }
+    emuenv.net.netAddr = net_relay::virtual_ip();
+    emuenv.net.broadcastAddr = net_relay::broadcast_ip();
+    return 1;
 }
 
 static int ret_net_errno(EmuEnvState &emuenv, int thread_id, int ret) {
@@ -298,6 +336,13 @@ EXPORT(int, sceNetGetMacAddress, SceNetEtherAddr *addr, int flags) {
     if (addr == nullptr) {
         RET_NET_ERRNO(SCE_NET_ERROR_EINVAL);
     }
+    if (emuenv.cfg.adhoc_relay && net_relay::active()) {
+        // A made-up, locally administered MAC built from the virtual IP: unique in the room
+        const uint32_t ip = ntohl(net_relay::virtual_ip());
+        const uint8_t mac[6] = { 0x02, 0x00, uint8_t(ip >> 24), uint8_t(ip >> 16), uint8_t(ip >> 8), uint8_t(ip) };
+        memcpy(addr->data, mac, sizeof(mac));
+        return 0;
+    }
     const auto selected_addr = net_utils::get_selected_assigned_addr(emuenv.cfg.adhoc_addr);
 #ifdef _WIN32
     IP_ADAPTER_INFO AdapterInfo[16];
@@ -459,6 +504,21 @@ EXPORT(int, sceNetInit, SceNetInitParam *param) {
     emuenv.net.resolver_id = ++emuenv.net.next_id;
     net_utils::init_address(emuenv.cfg.adhoc_addr, emuenv.net.netAddr, emuenv.net.broadcastAddr);
     emuenv.net.current_addr_index = emuenv.cfg.adhoc_addr;
+    // Ad hoc over the internet: start connecting now, in the background, so the relay is up by
+    // the time the game opens its ad hoc sockets (they wait for it if it isn't)
+    net_relay::set_wanted(emuenv.cfg.adhoc_relay);
+    if (emuenv.cfg.adhoc_relay) {
+        if (net_relay::active()) {
+            emuenv.net.netAddr = net_relay::virtual_ip();
+            emuenv.net.broadcastAddr = net_relay::broadcast_ip();
+        } else {
+            net_relay::Config config;
+            if (make_relay_config(emuenv, config))
+                net_relay::start_async(config);
+            else
+                net_relay::set_wanted(false);
+        }
+    }
     return 0;
 }
 

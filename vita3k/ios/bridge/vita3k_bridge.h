@@ -104,6 +104,11 @@ bool v3k_set_setting_number(const char *key, double value);
 bool v3k_set_setting_bool(const char *key, bool value);
 bool v3k_set_setting_string(const char *key, const char *value);
 
+// Ad hoc over the internet: settings keys "adhoc-relay" (bool), "adhoc-relay-server",
+// "adhoc-relay-room", "adhoc-relay-key" (strings). Status is a line like
+// "connected to host:27360, room ..., virtual IP 10.77.0.2, 1 other player(s), ping 210 ms" or "off".
+char *v3k_adhoc_relay_status(void);
+
 // ---- Controller mapping ----
 // The core reads each Vita button from one physical (SDL gamepad) button. Slots and values are
 // SDL_GamepadButton numbers: slot = the button's default position, value = physical button used.

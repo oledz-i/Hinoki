@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Vita3K team
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -21,6 +22,7 @@ struct SettingsView: View {
                 TouchControlsSection()
                 EmulationSections()
                 MultiplayerSection()
+                AdhocSection()
                 Section {
                     NavigationLink {
                         AllPatchesView()
@@ -552,6 +554,112 @@ struct EmulationSections: View {
                 model.settings[keyPath: keyPath] = newValue
                 save(newValue)
             })
+    }
+}
+
+// MARK: - Ad hoc over the internet
+
+/// Ad hoc over the internet through a Hinoki relay server (tools/adhoc-relay)
+struct AdhocSection: View {
+    @EnvironmentObject var model: LibraryModel
+    @State private var server = ""
+    @State private var room = ""
+    @State private var key = ""
+    @State private var name = ""
+    @State private var status = "Off"
+    @State private var loaded = false
+    private let timer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        Section {
+            LabeledContent("Player name") {
+                TextField("3-16 letters or digits", text: $name)
+                    .multilineTextAlignment(.trailing)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .onSubmit(saveAll)
+            }
+            Toggle(isOn: Binding(get: { model.settings.adhocRelay }, set: { value in
+                model.settings.adhocRelay = value
+                model.setBool("adhoc-relay", value)
+                refresh()
+            })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use a relay server")
+                    Text("Sends a game's ad hoc (local wireless) multiplayer through a relay server, so friends anywhere can play together. Everyone needs the same server, room and game.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if model.settings.adhocRelay {
+                LabeledContent("Server") {
+                    TextField("myserver.duckdns.org", text: $server)
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .onSubmit(saveAll)
+                }
+                LabeledContent("Room") {
+                    TextField("public", text: $room)
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onSubmit(saveAll)
+                }
+                LabeledContent("Key") {
+                    SecureField("none", text: $key)
+                        .multilineTextAlignment(.trailing)
+                        .onSubmit(saveAll)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Status")
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Ad hoc over the internet (experimental)")
+        } footer: {
+            Text("Player name is your PS Vita user name, which games show to other players. Give each device its own name (letters, digits, - and _). The server runs from tools/adhoc-relay in the Hinoki repo (Docker). Add :port if it isn't 27360. The key is only needed if the server sets one. Hinoki connects when a game starts its network.")
+        }
+        .onAppear {
+            if !loaded {
+                server = model.settings.adhocRelayServer
+                room = model.settings.adhocRelayRoom
+                key = model.settings.adhocRelayKey
+                name = model.settings.userName
+                loaded = true
+            }
+            refresh()
+        }
+        .onDisappear(perform: saveAll)
+        .onReceive(timer) { _ in refresh() }
+    }
+
+    private func saveAll() {
+        guard loaded else { return }
+        if server != model.settings.adhocRelayServer {
+            model.settings.adhocRelayServer = server
+            model.setString("adhoc-relay-server", server)
+        }
+        if room != model.settings.adhocRelayRoom {
+            model.settings.adhocRelayRoom = room
+            model.setString("adhoc-relay-room", room)
+        }
+        let cleanName = String(name.filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }.prefix(16))
+        if cleanName != model.settings.userName && cleanName.count >= 3 {
+            model.settings.userName = cleanName
+            model.setString("user-name", cleanName)
+        }
+        if cleanName != name { name = cleanName.count >= 3 ? cleanName : model.settings.userName }
+        if key != model.settings.adhocRelayKey {
+            model.settings.adhocRelayKey = key
+            model.setString("adhoc-relay-key", key)
+        }
+    }
+
+    private func refresh() {
+        let text = takeString(v3k_adhoc_relay_status()) ?? "off"
+        status = text == "off" ? "Not connected (connects when a game starts ad hoc)" : String(text.prefix(1)).uppercased() + String(text.dropFirst())
     }
 }
 

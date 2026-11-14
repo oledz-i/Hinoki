@@ -21,6 +21,10 @@
 
 #include <net/types.h>
 
+// Ad hoc over the internet (net/relay.h). Returns 0 if the relay is off, 1 if it is connected
+// (the ad hoc address is now the virtual IP), -1 if it is on but could not connect.
+int apply_adhoc_relay(EmuEnvState &emuenv);
+
 DECL_EXPORT(int, sceNetBind, int sid, const SceNetSockaddr *addr, unsigned int addrlen);
 DECL_EXPORT(int, sceNetGetMacAddress, SceNetEtherAddr *addr, int flags);
 DECL_EXPORT(int, sceNetInetPton, int af, const char *src, void *dst);

@@ -182,6 +182,14 @@ static void adhoc_thread(EmuEnvState &emuenv, int thread_id) {
 
         LOG_INFO("Adhoc thread: starting network loop");
 
+        // Ad hoc over the internet: connect to the relay before any ad hoc socket is created,
+        // so the sockets below (and the game's) go through it
+        const int relay = apply_adhoc_relay(emuenv);
+        if (relay < 0) {
+            handle_error_and_disconnect(0);
+            continue;
+        }
+
         const SceNetSockaddrIn recvBind{
             .sin_len = sizeof(SceNetSockaddrIn),
             .sin_family = AF_INET,
@@ -253,7 +261,7 @@ static void adhoc_thread(EmuEnvState &emuenv, int thread_id) {
             continue;
         }
 
-        if (emuenv.cfg.adhoc_addr != emuenv.net.current_addr_index) {
+        if (relay == 0 && emuenv.cfg.adhoc_addr != emuenv.net.current_addr_index) {
             // If address has changed, reinitialize the network address and broadcast address
             std::lock_guard<std::mutex> lock(emuenv.netctl.mutex);
             net_utils::init_address(emuenv.cfg.adhoc_addr, emuenv.net.netAddr, emuenv.net.broadcastAddr);

@@ -209,6 +209,10 @@ using PhysicalKeyCode = input::PhysicalKeyCode;
     code(int, "http-read-end-attempts", 10, http_read_end_attempts)                                     \
     code(int, "http-read-end-sleep-ms", 250, http_read_end_sleep_ms)                                    \
     code(int, "adhoc-addr", 0, adhoc_addr)                                                              \
+    code(bool, "adhoc-relay", false, adhoc_relay)                                                       \
+    code(std::string, "adhoc-relay-server", std::string{}, adhoc_relay_server)                          \
+    code(std::string, "adhoc-relay-room", std::string{}, adhoc_relay_room)                              \
+    code(std::string, "adhoc-relay-key", std::string{}, adhoc_relay_key)                                \
     code(int, "front-camera-type", 2, front_camera_type)                                                \
     code(std::string, "front-camera-id", std::string{}, front_camera_id)                                \
     code(std::string, "front-camera-image", std::string{}, front_camera_image)                          \

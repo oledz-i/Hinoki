@@ -50,6 +50,7 @@ add_executable(vita3k MACOSX_BUNDLE
 
 target_include_directories(vita3k PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(vita3k PRIVATE
+	net
 	SDL3::SDL3
 	pugixml::pugixml
 	moltenvk_static

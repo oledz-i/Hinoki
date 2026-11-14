@@ -20,6 +20,7 @@
 
 #include <modules/module_parent.h>
 
+#include <config/state.h>
 #include <cpu/functions.h>
 #include <emuenv/state.h>
 #include <io/device.h>
@@ -41,11 +42,88 @@
 #include <util/string_utils.h>
 #include <util/thermal.h>
 
+#include <cstring>
 #include <mutex>
 #include <unordered_set>
 #include <vector>
 
 static constexpr bool LOG_UNK_NIDS_ALWAYS = false;
+
+// Ad hoc matching: sceNetAdhocMatchingSelectTarget (invite a player, or accept their invite)
+// returns 0x8041310F when that player is already mid-handshake: state 4, we already sent them a
+// request, or state 3, we already accepted theirs. Over the network a handshake takes long enough
+// for a second tap on the same player to land inside it, and the error makes some games (Nidhogg)
+// drop ad hoc. A second invite is made to succeed, since it changes nothing. A tap after accepting
+// still fails (with 0x80413110): games such as Nidhogg treat a successful select-target as "I
+// invited", which would make both players the guest and the match would never start.
+// Only applied when the bytes are exactly the ones in firmware 3.74's adhoc_matching.suprx
+// (segment 0 offset 0x720: movw r4, #0x310F; movt r4, #0x8041).
+static bool patch_bytes(uint8_t *code, const uint8_t *expected, const uint8_t *replacement, size_t size) {
+    if (memcmp(code, expected, size) != 0)
+        return false;
+    memcpy(code, replacement, size);
+    return true;
+}
+
+// Ad hoc matching, second patch: the handshake retransmit interval. A game passes
+// sceNetAdhocMatchingCreate an interval (rexmtint) and a count (initcount) for re-sending a request
+// or an accept before giving up; Soul Sacrifice Delta passes 8 ms x 3, so it cancels after 24 ms,
+// which a Vita on the same Wi-Fi can answer but a player across the internet can't. Create stores
+// the interval with str.w r11, [r5, #0x2c] (offset 0x326); that store and the next one are rewritten
+// so the next one comes first and a call into a few instructions placed past the end of the code
+// (offset 0x3E48, still inside the module's last page) stores max(interval, 300 ms) instead.
+// Re-sending less often changes nothing on the same Wi-Fi, where the first send is answered.
+static void patch_adhoc_matching_rexmt(MemState &mem, const SceKernelModuleInfo &info) {
+    constexpr uint32_t SITE = 0x326;
+    constexpr uint32_t CAVE = 0x3E48;
+    static constexpr uint8_t site_expected[8] = { 0xC5, 0xF8, 0x2C, 0xB0, 0xC5, 0xF8, 0x30, 0xE0 }; // str.w r11, [r5, #0x2c]; str.w lr, [r5, #0x30]
+    static constexpr uint8_t site_replacement[8] = { 0xC5, 0xF8, 0x30, 0xE0, 0x03, 0xF0, 0x8D, 0xFD }; // str.w lr, [r5, #0x30]; bl CAVE
+    // movw r12, #0x93E0; movt r12, #0x0004 (300000 us); cmp r11, r12; it lo; movlo r11, r12;
+    // str.w r11, [r5, #0x2c]; bx lr
+    static constexpr uint8_t cave[20] = { 0x49, 0xF2, 0xE0, 0x3C, 0xC0, 0xF2, 0x04, 0x0C, 0xE3, 0x45, 0x38, 0xBF, 0xE3, 0x46, 0xC5, 0xF8, 0x2C, 0xB0, 0x70, 0x47 };
+    static constexpr uint8_t zeros[sizeof(cave)] = {};
+    const auto &seg = info.segments[0];
+    const auto base = seg.vaddr.cast<uint8_t>();
+    const uint32_t allocated = (seg.memsz + 0xFFF) & ~0xFFFu;
+    if (!base || seg.memsz != CAVE || allocated < CAVE + sizeof(cave)) {
+        LOG_WARN("Ad hoc matching: module layout not as expected, retransmit patch not applied");
+        return;
+    }
+    uint8_t *code = base.get(mem);
+    if (memcmp(code + SITE, site_expected, sizeof(site_expected)) != 0 || memcmp(code + CAVE, zeros, sizeof(zeros)) != 0) {
+        LOG_WARN("Ad hoc matching: different module version, retransmit patch not applied");
+        return;
+    }
+    memcpy(code + CAVE, cave, sizeof(cave));
+    memcpy(code + SITE, site_replacement, sizeof(site_replacement));
+    LOG_INFO("Ad hoc matching: handshake retransmit interval raised to at least 300 ms for play over the internet");
+}
+
+// Both patches are only for ad hoc over the internet (relay mode): on a local network the game's
+// own timings work, so the module is left as it is.
+static void patch_adhoc_matching(MemState &mem, const SceKernelModuleInfo &info, bool relay) {
+    if (!relay || std::string(info.module_name) != "SceNetAdhocMatching")
+        return;
+    constexpr uint32_t OFFSET = 0x720;
+    static constexpr uint8_t expected[8] = { 0x43, 0xF2, 0x0F, 0x14, 0xC8, 0xF2, 0x41, 0x04 };
+    // At this point r3 holds the target's state minus 1. State 4 (we already sent this target a request):
+    // succeed, as a second tap on the same player changes nothing. State 3 (we already accepted this
+    // target's request): fall through to the state-5 error (0x80413110), so the game stays the host
+    // instead of treating the tap as its own invite.
+    //   cmp r3, #3 / bne +4 (state-5 error) / movs r4, #0 / b +8 (return)
+    static constexpr uint8_t replacement[8] = { 0x03, 0x2B, 0x02, 0xD1, 0x00, 0x24, 0x04, 0xE0 };
+    const auto &seg = info.segments[0];
+    const auto base = seg.vaddr.cast<uint8_t>();
+    if (!base || seg.memsz < OFFSET + sizeof(expected)) {
+        LOG_WARN("Ad hoc matching: module layout not as expected, select-target patch not applied");
+        return;
+    }
+    if (patch_bytes(base.get(mem) + OFFSET, expected, replacement, sizeof(expected)))
+        LOG_INFO("Ad hoc matching: selecting a player we already invited now succeeds instead of failing with 0x8041310F");
+    else
+        LOG_WARN("Ad hoc matching: different module version, select-target patch not applied");
+    patch_adhoc_matching_rexmt(mem, info);
+}
 
 #define LIBRARY(name) extern const LibraryInitFn import_library_init_##name;
 #include <modules/library_init_list.inc>
@@ -301,6 +379,7 @@ SceUID load_module(EmuEnvState &emuenv, const std::string &module_path) {
         if (module_id >= 0) {
             const auto module = lock_and_find(module_id, emuenv.kernel.loaded_modules, emuenv.kernel.mutex);
             LOG_INFO("Module {} (at \"{}\") loaded", module->info.module_name, module_path);
+            patch_adhoc_matching(emuenv.mem, module->info, emuenv.cfg.adhoc_relay);
         } else {
             LOG_ERROR("Failed to load module {}", module_path);
         }

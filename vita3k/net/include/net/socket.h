@@ -114,9 +114,27 @@ struct PosixSocket : public Socket {
 };
 
 struct P2PSocket : public PosixSocket {
+    // Relay mode (net/relay.h): the host socket sits on 127.0.0.1 and talks to the relay bridge
+    bool relay = false;
+    bool relay_pending = false; // created while the relay was still connecting
+    bool relay_bound = false;
+    uint16_t relay_local_port = 0; // host socket's loopback port
+    uint32_t relay_peer_ip = 0; // network order
+    uint16_t relay_peer_port = 0, relay_peer_vport = 0; // host order
+    bool relay_has_peer = false;
+    bool listening = false;
+    uint16_t relay_port = 0, relay_vport = 0; // our own port pair, host order
+
     explicit P2PSocket(int domain, int type, int protocol);
     explicit P2PSocket(abs_socket sock, int type)
         : PosixSocket(sock, type) {}
+
+    int close() override;
+    int listen(int backlog) override;
+    int abort(int flags) override;
+
+    // Decides relay mode on first use: waits for a relay that is still connecting
+    void resolve_relay();
 
     int bind(const SceNetSockaddr *addr, unsigned int addrlen) override;
     int send_packet(const void *msg, unsigned int len, int flags, const SceNetSockaddr *to, unsigned int tolen) override;

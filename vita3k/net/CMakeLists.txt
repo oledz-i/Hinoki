@@ -6,10 +6,12 @@ add_library(
     include/net/state.h
     include/net/types.h
     include/net/socket.h
+    include/net/relay.h
     src/net.cpp
     src/epoll.cpp
     src/posixsocket.cpp
     src/p2psocket.cpp
+    src/relay.cpp
 )
 
 target_include_directories(net PUBLIC include)

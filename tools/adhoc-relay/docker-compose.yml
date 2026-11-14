@@ -1,0 +1,17 @@
+services:
+  hinoki-relay:
+    build: .
+    container_name: hinoki-relay
+    restart: unless-stopped
+    ports:
+      - "27360:27360/tcp"
+    environment:
+      RELAY_PORT: "27360"
+      # Set a key so only people you give it to can join (Hinoki › Settings › Ad hoc › Key)
+      RELAY_KEY: ""
+      RELAY_MAX_ROOM: "8"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
