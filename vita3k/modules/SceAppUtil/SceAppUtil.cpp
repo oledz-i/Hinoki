@@ -262,10 +262,15 @@ EXPORT(int, sceAppUtilSaveDataDataRemove, SceAppUtilSaveDataFileSlot *slot, SceA
             continue;
         }
         const auto file = fs::path(construct_savedata0_path(data_path));
-        if (fs::is_regular_file(file)) {
-            remove_file(emuenv.io, file.string().c_str(), emuenv.vita_fs_path, export_name);
-        } else
+        // Look at the real file: the savedata0: path itself never exists on the host, so every file
+        // was treated as a folder and never deleted (Danganronpa 2 removing a slot's icon)
+        const fs::path host_path = expand_path(emuenv.io, file.string().c_str(), emuenv.vita_fs_path);
+        std::error_code ec;
+        if (fs::is_directory(host_path, ec))
             remove_dir(emuenv.io, file.string().c_str(), emuenv.vita_fs_path, export_name);
+        else if (fs::exists(host_path, ec))
+            remove_file(emuenv.io, file.string().c_str(), emuenv.vita_fs_path, export_name);
+        // Nothing there: nothing to remove (not an error)
     }
 
     if (slot && files && files[0].mode == SCE_APPUTIL_SAVEDATA_DATA_REMOVE_MODE_DEFAULT) {

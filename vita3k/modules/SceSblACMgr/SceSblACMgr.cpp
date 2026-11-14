@@ -20,3 +20,9 @@
 EXPORT(int, _sceSblACMgrIsGameProgram) {
     return UNIMPLEMENTED();
 }
+
+// Asked once at boot by Madden NFL 13 and Minecraft: a retail console, not a development kit
+// (the import was missing, so the game read back an undefined value)
+EXPORT(int, _sceSblACMgrIsDevelopmentMode) {
+    return 0;
+}

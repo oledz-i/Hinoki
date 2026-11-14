@@ -6436,6 +6436,7 @@ NID(sceSasSetVolume, 0x0BE8204D)
 // Module "SceSblACMgr"
 // Library "SceSblACMgr"
 NID(_sceSblACMgrIsGameProgram, 0x3C17A7F7)
+NID(_sceSblACMgrIsDevelopmentMode, 0xE87D1777)
 // Module "SceSblGcAuthMgr"
 // Library "SceSblGcAuthMgr"
 NID(_sceSblGcAuthMgrAdhocBB160Auth1, 0x5E56F845)
