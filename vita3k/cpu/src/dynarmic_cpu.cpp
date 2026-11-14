@@ -161,10 +161,25 @@ bool ios_has_extended_va() {
         std::uint64_t range_gib = 0;
         if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm_info), &count) == KERN_SUCCESS && vm_info.max_address > vm_info.min_address)
             range_gib = (vm_info.max_address - vm_info.min_address) >> 30;
-        // SecTask reads the running process, so inside LiveContainer this is the container's entitlement.
-        // If it can't be checked at all, keep the old behavior (full pool)
-        const bool extended_va = entitled || !can_check;
-        LOG_INFO("iOS memory: extended address space {} (address range {} GiB)", can_check ? (entitled ? "yes" : "NO") : "unknown", range_gib);
+        // What actually matters is the free address space, so measure it too: with the large address
+        // space there are tens of GiB free in one piece, without it only a few. A process that has the
+        // room (whatever the entitlement check says, e.g. inside a container app) keeps the full pool
+        std::uint64_t low = 0, high = 64ull << 10; // MiB
+        while (high - low > 256) {
+            const std::uint64_t mid = (low + high) / 2;
+            void *probe = mmap(nullptr, mid << 20, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
+            if (probe != MAP_FAILED) {
+                munmap(probe, mid << 20);
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        const bool roomy = low >= (12ull << 10);
+        // If the entitlement can't be checked at all, the measurement decides
+        const bool extended_va = entitled || roomy;
+        LOG_INFO("iOS memory: extended address space {} (entitlement {}, largest free address block ~{} GiB, address range {} GiB)",
+            extended_va ? "yes" : "NO", can_check ? (entitled ? "yes" : "no") : "unknown", low >> 10, range_gib);
         if (!extended_va)
             LOG_WARN("iOS memory: no extended address space (usual with free SideStore signing). Using a smaller JIT pool so the app doesn't run out of addresses");
         return extended_va;

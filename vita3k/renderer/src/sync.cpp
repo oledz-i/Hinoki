@@ -175,10 +175,24 @@ SyncWaitResult wishlist(SceGxmSyncObject *sync_object, const uint32_t timestamp,
             return sync_object->being_deleted || sync_object->timestamp_current >= timestamp;
         };
 
-        if (timeout_micros == -1) {
-            sync_object->cond.wait(lock, pred);
-        } else if (!sync_object->cond.wait_for(lock, std::chrono::microseconds(timeout_micros), pred)) {
-            return SyncWaitResult::TimedOut;
+        // The condition variable is in game memory too: the same damage can make waiting throw
+        try {
+            if (timeout_micros == -1) {
+                sync_object->cond.wait(lock, pred);
+            } else if (!sync_object->cond.wait_for(lock, std::chrono::microseconds(timeout_micros), pred)) {
+                return SyncWaitResult::TimedOut;
+            }
+        } catch (const std::system_error &e) {
+            static std::atomic_flag logged_wait = ATOMIC_FLAG_INIT;
+            if (!logged_wait.test_and_set())
+                LOG_ERROR("A GPU sync object in game memory is damaged ({}): not waiting on it", e.what());
+            if (lock.owns_lock()) {
+                try {
+                    lock.unlock();
+                } catch (...) {
+                }
+            }
+            return SyncWaitResult::Ready;
         }
     }
     if (sync_object->being_deleted)
