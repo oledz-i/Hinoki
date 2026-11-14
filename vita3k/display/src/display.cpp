@@ -63,7 +63,20 @@ static void vblank_sync_thread(EmuEnvState &emuenv) {
                     // this is necessary so that the command buffer processing doesn't get starved
                     // with vsync enabled and a screen with a refresh rate of 60Hz or less
                     if (display.vblank_count % 2 == 0) {
+#if defined(VITA3K_PLATFORM_IOS)
+                        // iOS: ask for a frame the way overlays do, not with should_display. Most games
+                        // keep drawing while a system dialog is open (FIFA 15, Soul Sacrifice Delta):
+                        // should_display, set on every other vblank, presented a frame at whatever point
+                        // the game's scene had reached, in between the game's own frames. Metal hung the
+                        // GPU on such a frame within a second of the dialog opening (device lost, game
+                        // closed; never while the screen was being recorded, which changes the timing).
+                        // An async flip is only honoured once the game has stopped drawing and nothing
+                        // of it is queued (overlay_frame_allowed in batch.cpp); until then the dialog is
+                        // drawn on the game's own frames.
+                        emuenv.renderer->async_flip_requested.store(true, std::memory_order_relaxed);
+#else
                         emuenv.renderer->should_display = true;
+#endif
                         emuenv.renderer->command_buffer_queue.wake();
                     }
             }
