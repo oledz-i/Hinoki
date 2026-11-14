@@ -91,10 +91,11 @@ void set_current_cpu_state(CPUState *state);
 inline constexpr std::size_t IOS_TINY_CODE_CACHE_SIZE = 4 * 1024 * 1024;
 inline constexpr std::size_t IOS_SMALL_CODE_CACHE_SIZE = 16 * 1024 * 1024;
 inline constexpr std::size_t IOS_BIG_CODE_CACHE_SIZE = 64 * 1024 * 1024;
-// iOS 26+ prepares them all at launch: 64 tiny + 32 small + 2 big = 98 threads, still 896 MiB in all
-// (the same pause at launch as the 48 small + 2 big used before, which allowed only 50 threads).
-inline constexpr std::size_t IOS_TINY_CODE_CACHE_COUNT = 64;
-inline constexpr std::size_t IOS_SMALL_CODE_CACHE_COUNT = 32;
+// iOS 26+ prepares them all at launch, and the app is frozen while that happens (about 1.5 ms per
+// MiB): 80 tiny + 16 small + 2 big = 98 threads in 704 MiB (was 64 + 32 + 2 = 896 MiB for the same
+// 98 threads; logs show a game rarely moves more than a couple of threads past 4 MiB).
+inline constexpr std::size_t IOS_TINY_CODE_CACHE_COUNT = 80;
+inline constexpr std::size_t IOS_SMALL_CODE_CACHE_COUNT = 16;
 inline constexpr std::size_t IOS_BIG_CODE_CACHE_COUNT = 2;
 // The prepared caches count against the app's memory limit, which on 4 GB devices left about 1.1 GiB
 // for the game (FIFA 15 was killed for memory on an iPhone 11). Devices with a low limit prepare fewer:

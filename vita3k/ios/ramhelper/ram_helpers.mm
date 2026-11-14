@@ -83,6 +83,27 @@ constexpr uint64_t MiB = 1024ull * 1024ull;
 constexpr uint64_t HELPER_HEADROOM = 256 * MiB;
 constexpr double START_TIMEOUT = 8.0;
 
+// The JIT debugger freezes the whole app while it prepares memory; a helper lookup made during that
+// times out. Wait for it to finish first (weak: not every build of the app has JIT setup)
+extern "C" bool v3k_jit_preparing(void) __attribute__((weak));
+// True while a debugger is attached and JIT memory is about to be prepared (the freeze is imminent)
+extern "C" bool v3k_jit_can_request(void) __attribute__((weak));
+
+namespace {
+bool jit_freeze_coming() {
+    return (v3k_jit_preparing && v3k_jit_preparing()) || (v3k_jit_can_request && v3k_jit_can_request());
+}
+// At most 30 s of waiting in all for the whole run of the app: if JIT setup never finishes (it failed),
+// helpers and game boots must not keep waiting for it
+std::atomic<int> g_jit_wait_budget{ 300 }; // tenths of a second
+void wait_out_jit_setup(int tenths) {
+    for (int waited = 0; waited < tenths && g_jit_wait_budget > 0 && jit_freeze_coming(); waited++) {
+        g_jit_wait_budget--;
+        [NSThread sleepForTimeInterval:0.1];
+    }
+}
+} // namespace
+
 struct Helper {
     xpc_connection_t connection = nil;
     uint64_t remaining = 0; // what it can still lend
@@ -107,7 +128,28 @@ std::vector<std::shared_ptr<Helper>> g_helpers;
 std::vector<Backed> g_backed;
 NSMutableArray *g_shmems = nil; // keeps the shared memory objects of this boot
 std::string g_status = "Not used yet";
-std::atomic<bool> g_start_failed{ false };
+// Only a missing extension (or no NSExtension at all) stops the helpers for good. Everything else
+// (the container answering slowly, the app frozen by the JIT debugger while iOS looked the helper up)
+// is retried: one failed start used to turn the helpers off until the app was restarted, which is why
+// they "worked before and then didn't"
+std::atomic<bool> g_permanent_failure{ false };
+std::atomic<int> g_failures{ 0 };
+std::atomic<double> g_retry_after{ 0.0 };
+constexpr int MAX_BACKGROUND_RETRIES = 6;
+
+double now_seconds() {
+    return NSDate.timeIntervalSinceReferenceDate;
+}
+
+bool start_blocked() {
+    return g_permanent_failure || now_seconds() < g_retry_after.load();
+}
+
+void transient_failure() {
+    const int failures = ++g_failures;
+    // 2, 4, 8, 16, 30 s
+    g_retry_after = now_seconds() + std::min(30.0, static_cast<double>(1 << std::min(failures, 5)));
+}
 bool g_new_boot = true; // the next range offered starts a new boot
 bool g_lending = false; // the live helpers lent memory to the running game (they stay alive until it ends)
 size_t g_next = 0;
@@ -201,13 +243,14 @@ size_t live_count() {
 // Starts one more helper process and waits until it connects
 bool start_helper() {
     std::lock_guard<std::mutex> start_guard(g_start_lock);
-    if (g_start_failed)
+    if (start_blocked())
         return false;
+    wait_out_jit_setup(200);
     const double started_at = NSDate.timeIntervalSinceReferenceDate;
     NSString *identifier = helper_identifier();
     if (!identifier) {
         set_status("The RAM helper extension is not in this copy of the app (the signer may have removed it)", true);
-        g_start_failed = true;
+        g_permanent_failure = true;
         return false;
     }
     RAM_LOG_INFO("starting a RAM helper ({}{})", identifier.UTF8String, v3k_ram_helpers_in_livecontainer() ? ", inside LiveContainer" : "");
@@ -220,28 +263,29 @@ bool start_helper() {
     }
     if (!extension_class) {
         set_status("This iOS version has no way to start the RAM helper", true);
-        g_start_failed = true;
+        g_permanent_failure = true;
         return false;
     }
     NSError *error = nil;
     id<V3KExtensionAPI> extension = nil;
     // LiveContainer answers this through its own hooks, which can take a moment to be ready at launch: try a few times
-    for (int attempt = 0; attempt < 4 && !extension; attempt++) {
+    for (int attempt = 0; attempt < 6 && !extension; attempt++) {
         if (attempt)
-            [NSThread sleepForTimeInterval:0.5];
+            [NSThread sleepForTimeInterval:0.75];
+        wait_out_jit_setup(100);
         error = nil;
         extension = [(Class<V3KExtensionAPI>)extension_class extensionWithIdentifier:identifier error:&error];
     }
     if (!extension) {
         RAM_LOG_WARN("extensionWithIdentifier failed: {} (domain {}, code {})", error.localizedDescription.UTF8String ?: "no error given",
             error.domain.UTF8String ?: "none", static_cast<long>(error.code));
+        transient_failure();
         if (v3k_ram_helpers_in_livecontainer())
-            set_status("Your app container (LiveContainer, Strata, ...) could not start the RAM helper. It needs helper process / app extension support for apps inside it (LiveContainer 3.8.13 or newer); otherwise install Hinoki on its own", true);
+            set_status(fmt::format("Your app container (LiveContainer, Strata, ...) did not start the RAM helper this time (try {}); trying again in a moment. If it never works, the container needs app extension support (LiveContainer 3.8.13 or newer)", g_failures.load()), true);
         else
             set_status(std::string("iOS could not find the RAM helper (") + (error.localizedDescription.UTF8String ?: "no reason given")
-                    + "). Reinstall Hinoki without removing app extensions (SideStore/AltStore can strip them)",
+                    + "); trying again in a moment. If it never works, reinstall Hinoki without removing app extensions (SideStore/AltStore can strip them)",
                 true);
-        g_start_failed = true;
         return false;
     }
     extension.preferredLanguages = @[];
@@ -262,8 +306,8 @@ bool start_helper() {
                                         }];
     dispatch_semaphore_wait(spawned, dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(START_TIMEOUT * NSEC_PER_SEC)));
     if (!started) {
-        set_status("iOS did not start a RAM helper process", true);
-        g_start_failed = true;
+        set_status("iOS did not start a RAM helper process; trying again in a moment", true);
+        transient_failure();
         return false;
     }
 
@@ -271,13 +315,15 @@ bool start_helper() {
     while (live_count() <= before) {
         const double left = deadline - NSDate.timeIntervalSinceReferenceDate;
         if (left <= 0) {
-            set_status("A RAM helper started but never connected", true);
+            set_status("A RAM helper started but never connected; trying again in a moment", true);
             [extension _kill:SIGKILL];
-            g_start_failed = true;
+            transient_failure();
             return false;
         }
         dispatch_semaphore_wait(g_connected, dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(left * NSEC_PER_SEC)));
     }
+    g_failures = 0;
+    g_retry_after = 0.0;
     std::lock_guard lock(g_lock);
     [g_extensions addObject:extension];
     RAM_LOG_INFO("helper process started in {} ms ({} of {} wanted)", static_cast<int>((NSDate.timeIntervalSinceReferenceDate - started_at) * 1000), g_helpers.size(), wanted_helpers());
@@ -329,7 +375,7 @@ std::shared_ptr<Helper> helper_with_room(uint64_t length) {
                 }
             }
         }
-        if (g_start_failed || live_count() >= static_cast<size_t>(wanted_helpers()) || !start_helper())
+        if (start_blocked() || live_count() >= static_cast<size_t>(wanted_helpers()) || !start_helper())
             return nullptr;
     }
 }
@@ -471,8 +517,8 @@ uint64_t v3k_ram_helpers_back(void *host, uint64_t size, bool last) {
         g_lending = false;
         end_helpers();
     }
-    if (g_start_failed) {
-        // Tried and failed earlier in this run of the app: don't make every boot wait again
+    if (start_blocked()) {
+        // Failed moments ago (or can't work here): don't make this boot wait; the next one tries again
         if (last)
             g_new_boot = true;
         return 0;
@@ -513,7 +559,7 @@ uint64_t v3k_ram_helpers_back(void *host, uint64_t size, bool last) {
         RAM_LOG_INFO("this app: {} MiB footprint, {} MiB still available to it (the lent memory is not counted here)", v3k_memory_footprint() / MiB, v3k_memory_available() / MiB);
         if (total)
             set_status(fmt::format("{} MiB of the PS Vita's memory lent by {} helper process{}", total / MiB, helpers, helpers == 1 ? "" : "es"));
-        else if (!g_start_failed)
+        else if (!start_blocked())
             set_status("The helpers had no memory to lend", true);
     }
     return offset;
@@ -535,12 +581,21 @@ void v3k_ram_helpers_game_ended(void) {
 }
 
 void v3k_ram_helpers_prepare(void) {
-    if (!v3k_ram_helpers_enabled() || g_start_failed || !v3k_ram_helpers_bundled())
+    if (!v3k_ram_helpers_enabled() || g_permanent_failure || !v3k_ram_helpers_bundled())
         return;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        while (!g_start_failed && live_count() < static_cast<size_t>(wanted_helpers())) {
+        while (!start_blocked() && live_count() < static_cast<size_t>(wanted_helpers())) {
             if (!start_helper())
                 break;
+        }
+        // A start that failed is tried again by itself (a few times, further apart each time), so the
+        // helpers are ready by the time a game boots
+        if (!g_permanent_failure && g_failures > 0 && g_failures <= MAX_BACKGROUND_RETRIES
+            && live_count() < static_cast<size_t>(wanted_helpers())) {
+            const double delay = std::max(0.5, g_retry_after.load() - now_seconds());
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                v3k_ram_helpers_prepare();
+            });
         }
     });
 }
@@ -572,7 +627,10 @@ uint64_t v3k_ram_helpers_in_use(void) {
 uint64_t v3k_ram_helpers_probe(void) {
     if (!v3k_ram_helpers_bundled())
         return 0;
-    g_start_failed = false; // the user asked: try again
+    // The user asked: try again
+    g_permanent_failure = false;
+    g_failures = 0;
+    g_retry_after = 0.0;
     if (live_count() == 0 && !start_helper())
         return 0;
     xpc_connection_t connection;

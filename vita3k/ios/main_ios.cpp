@@ -44,6 +44,7 @@
 #include <mem/functions.h>
 #include <renderer/vulkan/device_lost.h>
 #include <sdl-frontend/session.h>
+#include <util/address_space.h>
 #include <util/gpu_memory.h>
 #include <util/log.h>
 #include <util/presentation.h>
@@ -246,23 +247,9 @@ int main(int argc, char *argv[]) {
 
         // Address space left (not memory): without the extended address space entitlement it runs out
         // long before RAM does, and every allocation fails with bad_alloc
-        const auto largest_free_block_mib = [] {
-            std::uint64_t low = 0, high = 64ull << 10; // MiB
-            while (high - low > 64) {
-                const std::uint64_t mid = (low + high) / 2;
-                void *probe = mmap(nullptr, mid << 20, PROT_NONE, MAP_ANON | MAP_PRIVATE, -1, 0);
-                if (probe != MAP_FAILED) {
-                    munmap(probe, mid << 20);
-                    low = mid;
-                } else {
-                    high = mid;
-                }
-            }
-            return low;
-        };
         LOG_INFO("Launching {} (JIT {}, {} free JIT caches, {} MiB of memory available, largest free address block ~{} MiB)", title_id,
             ios::jit_pool_ready() ? "ready" : "NOT ready", ios::jit_pool_available(),
-            os_proc_available_memory() / (1024 * 1024), largest_free_block_mib());
+            os_proc_available_memory() / (1024 * 1024), address_space::largest_free_block_mib());
 
         // The library can rotate freely; games are landscape
         // (Portrait mode: upright too, with the game at the top and the controls below)

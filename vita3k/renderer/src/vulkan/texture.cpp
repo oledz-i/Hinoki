@@ -24,6 +24,7 @@
 #include <gxm/functions.h>
 #include <gxm/types.h>
 #include <renderer/functions.h>
+#include <util/address_space.h>
 #include <util/align.h>
 #include <vkutil/vkutil.h>
 
@@ -71,7 +72,11 @@ VKTextureCache::VKTextureCache(VKState &state)
     if (sysctlbyname("hw.memsize", &ram, &length, nullptr, 0) != 0 || ram == 0)
         ram = 6ull << 30;
     memory_budget = std::clamp<uint64_t>(ram / 6, 512ull << 20, 1536ull << 20);
-    LOG_INFO("Texture cache: up to {} MiB of graphics memory", memory_budget >> 20);
+    // Without the large address space (free SideStore signing) every texture also eats into the few
+    // GiB of addresses left beside the guest's 4 GiB: keep the cache small there
+    if (!address_space::extended())
+        memory_budget = 384ull << 20;
+    LOG_INFO("Texture cache: up to {} MiB of graphics memory{}", memory_budget >> 20, address_space::extended() ? "" : " (small address space)");
 #endif
 }
 
