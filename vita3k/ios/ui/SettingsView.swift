@@ -672,6 +672,7 @@ struct ContainerHelperSetupNote: View {
         case Int32(V3K_RAM_SETUP_CONTAINER_READY): return "Container, helpers supported"
         case Int32(V3K_RAM_SETUP_SEPARATE_PROCESS): return "Container, separate process"
         case Int32(V3K_RAM_SETUP_OPTION_OFF): return "Container, helpers off"
+        case Int32(V3K_RAM_SETUP_NEEDS_REINSTALL): return "Container, reinstall needed"
         default: return "Container"
         }
     }
@@ -680,7 +681,7 @@ struct ContainerHelperSetupNote: View {
         let hint = String(cString: v3k_ram_helpers_container_hint())
         if !hint.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                Label("Your container needs a setting changed", systemImage: "exclamationmark.triangle.fill")
+                Label("Your container needs attention for RAM helpers", systemImage: "exclamationmark.triangle.fill")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.orange)
                 Text(hint)

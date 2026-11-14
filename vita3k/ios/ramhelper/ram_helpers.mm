@@ -248,7 +248,7 @@ bool start_helper() {
     std::lock_guard<std::mutex> start_guard(g_start_lock);
     if (start_blocked())
         return false;
-    if (const int setup = v3k_ram_helpers_container_setup(); setup == V3K_RAM_SETUP_SEPARATE_PROCESS || setup == V3K_RAM_SETUP_OPTION_OFF) {
+    if (const int setup = v3k_ram_helpers_container_setup(); setup == V3K_RAM_SETUP_SEPARATE_PROCESS || setup == V3K_RAM_SETUP_OPTION_OFF || setup == V3K_RAM_SETUP_NEEDS_REINSTALL) {
         // Asking iOS can't work here: say what to change instead of timing out over and over
         set_status(v3k_ram_helpers_container_hint(), true);
         g_permanent_failure = true;
@@ -298,8 +298,17 @@ bool start_helper() {
         return false;
     }
     extension.preferredLanguages = @[];
+    // A cancelled request is a failed start: stop waiting at once (the boot used to wait out the whole
+    // timeout, ~6 s, after the container had already said no)
+    __block volatile bool cancelled = false;
+    __block bool needs_reinstall = false;
     [extension setRequestCancellationBlock:^(NSUUID *, NSError *cancel_error) {
-        RAM_LOG_WARN("a helper's request was cancelled ({})", cancel_error.localizedDescription.UTF8String ?: "");
+        const char *reason = cancel_error.localizedDescription.UTF8String ?: "";
+        RAM_LOG_WARN("a helper's request was cancelled ({})", reason);
+        if (strstr(reason, "cannot dlopen a main executable"))
+            needs_reinstall = true;
+        cancelled = true;
+        dispatch_semaphore_signal(g_connected);
     }];
 
     NSExtensionItem *item = [NSExtensionItem new];
@@ -322,6 +331,18 @@ bool start_helper() {
 
     const double deadline = NSDate.timeIntervalSinceReferenceDate + START_TIMEOUT;
     while (live_count() <= before) {
+        if (cancelled) {
+            [extension _kill:SIGKILL];
+            if (needs_reinstall) {
+                // The container hasn't prepared the helper (apps imported before it supported helpers)
+                set_status(v3k_ram_helpers_reinstall_hint(), true);
+                g_permanent_failure = true;
+            } else {
+                set_status("The container stopped the RAM helper as it started; trying again in a moment", true);
+                transient_failure();
+            }
+            return false;
+        }
         const double left = deadline - NSDate.timeIntervalSinceReferenceDate;
         if (left <= 0) {
             set_status("A RAM helper started but never connected; trying again in a moment", true);
@@ -515,6 +536,8 @@ bool v3k_ram_helpers_in_livecontainer(void) {
 // container's own process (not in a separate LiveProcess: Strata's seamless switching and its
 // full-screen built-in JIT launch apps there). Without the hooks iOS is asked for an extension it never
 // installed and gives up after ~4 s without an error, every time.
+static bool helper_needs_reinstall();
+
 int v3k_ram_helpers_container_setup(void) {
     static const int state = [] {
         if (!v3k_ram_helpers_in_livecontainer())
@@ -535,15 +558,78 @@ int v3k_ram_helpers_container_setup(void) {
         }
         RAM_LOG_INFO("container: {} process ({}), helper hooks {}", live_process ? "separate (LiveProcess)" : "the container's own",
             main_image ? main_image : "?", hooked ? "installed" : "NOT installed");
-        if (hooked)
+        if (hooked) {
+            if (helper_needs_reinstall()) {
+                RAM_LOG_WARN("container: the helper was not prepared when Hinoki was added to the container");
+                return V3K_RAM_SETUP_NEEDS_REINSTALL;
+            }
             return V3K_RAM_SETUP_CONTAINER_READY;
+        }
         return live_process ? V3K_RAM_SETUP_SEPARATE_PROCESS : V3K_RAM_SETUP_OPTION_OFF;
     }();
     return state;
 }
 
+const char *v3k_ram_helpers_reinstall_hint(void) {
+    return "Your container hasn't prepared Hinoki's RAM helper: Hinoki was added to it before the container supported helpers "
+           "(for example under Strata 3.0). Install Hinoki into the container again (as an update, keeping its data), then launch it again.";
+}
+
+// Inside a container the helper's program must have been converted to a library when the app was
+// added (Strata 4.0 / LiveContainer do it for apps they import from then on); a helper still built
+// as a program can't be loaded ("cannot dlopen a main executable")
+static bool helper_needs_reinstall() {
+    NSString *plugins = NSBundle.mainBundle.builtInPlugInsPath;
+    if (!plugins)
+        return false;
+    for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:plugins error:nil]) {
+        if (![name.pathExtension isEqualToString:@"appex"])
+            continue;
+        NSString *bundle_path = [plugins stringByAppendingPathComponent:name];
+        NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:[bundle_path stringByAppendingPathComponent:@"Info.plist"]];
+        if (![plist[@"CFBundleIdentifier"] hasSuffix:@"RamHelper"])
+            continue;
+        NSString *executable = plist[@"CFBundleExecutable"];
+        if (!executable)
+            return false;
+        NSFileHandle *file = [NSFileHandle fileHandleForReadingAtPath:[bundle_path stringByAppendingPathComponent:executable]];
+        NSData *head = [file readDataOfLength:4096];
+        [file closeFile];
+        if (head.length < 16)
+            return false;
+        const uint8_t *bytes = static_cast<const uint8_t *>(head.bytes);
+        uint32_t magic;
+        memcpy(&magic, bytes, 4);
+        size_t offset = 0;
+        if (magic == 0xBEBAFECA) { // FAT_CIGAM: big-endian fat header, first arch's offset
+            if (head.length < 8 + 20)
+                return false;
+            uint32_t be;
+            memcpy(&be, bytes + 8 + 8, 4);
+            offset = __builtin_bswap32(be);
+            if (offset + 16 > head.length) {
+                file = [NSFileHandle fileHandleForReadingAtPath:[bundle_path stringByAppendingPathComponent:executable]];
+                [file seekToFileOffset:offset];
+                head = [file readDataOfLength:16];
+                [file closeFile];
+                if (head.length < 16)
+                    return false;
+                bytes = static_cast<const uint8_t *>(head.bytes);
+                offset = 0;
+            }
+        }
+        uint32_t filetype;
+        memcpy(&magic, bytes + offset, 4);
+        memcpy(&filetype, bytes + offset + 12, 4);
+        return magic == 0xFEEDFACF && filetype == 0x2; // MH_MAGIC_64, MH_EXECUTE: not converted
+    }
+    return false;
+}
+
 const char *v3k_ram_helpers_container_hint(void) {
     switch (v3k_ram_helpers_container_setup()) {
+    case V3K_RAM_SETUP_NEEDS_REINSTALL:
+        return v3k_ram_helpers_reinstall_hint();
     case V3K_RAM_SETUP_SEPARATE_PROCESS:
         return "Hinoki is running in a separate process (LiveProcess), where your container can't start RAM helpers. "
                "In Strata: turn on HostJIT-InProcess for Hinoki (Runtime Center > HostJIT) or turn off Seamless app switching, "

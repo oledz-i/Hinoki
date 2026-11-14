@@ -119,6 +119,10 @@ struct LibraryView: View {
                             NowPlayingChip(title: music.nowPlaying, style: music.styleName) { music.skip() }
                         }
 
+                        if search.isEmpty, let last = model.apps.filter({ $0.lastPlayed > 0 }).max(by: { $0.lastPlayed < $1.lastPlayed }) {
+                            ContinuePlayingCard(app: last) { requestLaunch(last) }
+                        }
+
                         if !model.apps.isEmpty {
                             Text(model.apps.count == 1 ? "1 game" : "\(model.apps.count) games")
                                 .font(.footnote.weight(.medium))
@@ -730,5 +734,48 @@ struct LibrarySearch: ViewModifier {
         } else {
             content
         }
+    }
+}
+
+/// The game played most recently, one tap away
+struct ContinuePlayingCard: View {
+    let app: GameApp
+    let play: () -> Void
+
+    private var playedText: String {
+        let hours = app.playTime / 3600, minutes = (app.playTime % 3600) / 60
+        let time = hours > 0 ? "\(hours) h \(minutes) min played" : minutes > 0 ? "\(minutes) min played" : ""
+        let last = Date(timeIntervalSince1970: TimeInterval(app.lastPlayed))
+        let when = RelativeDateTimeFormatter().localizedString(for: last, relativeTo: Date())
+        return time.isEmpty ? "Last played \(when)" : "Last played \(when) · \(time)"
+    }
+
+    var body: some View {
+        Button(action: play) {
+            HStack(spacing: 14) {
+                Group {
+                    if let icon = app.icon {
+                        Image(uiImage: icon).resizable().scaledToFill()
+                    } else {
+                        Image(systemName: "gamecontroller.fill").font(.title2).foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+                .frame(width: 56, height: 56)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Continue playing").font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.55))
+                    Text(app.title).font(.headline).foregroundStyle(.white).lineLimit(1)
+                    Text(playedText).font(.caption).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "play.circle.fill").font(.system(size: 34)).foregroundStyle(.white)
+            }
+            .padding(12)
+            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.white.opacity(0.09)))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Color.white.opacity(0.08)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Continue playing \(app.title)")
     }
 }

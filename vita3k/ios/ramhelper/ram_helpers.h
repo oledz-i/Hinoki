@@ -39,10 +39,12 @@ enum {
     V3K_RAM_SETUP_CONTAINER_READY = 1, // the container's helper hooks are installed
     V3K_RAM_SETUP_SEPARATE_PROCESS = 2, // running in a LiveProcess: helpers can't start
     V3K_RAM_SETUP_OPTION_OFF = 3, // the app's "Helper Process Support" option is off (or too old a container)
+    V3K_RAM_SETUP_NEEDS_REINSTALL = 4, // added to the container before it supported helpers: install again
 };
 int v3k_ram_helpers_container_setup(void);
 // What to change in the container for helpers to work ("" when nothing)
 const char *v3k_ram_helpers_container_hint(void);
+const char *v3k_ram_helpers_reinstall_hint(void);
 
 // Backs [host, host + size) with helper memory, from the start, a chunk at a time; returns the bytes
 // backed (0 when off or no helper could lend any). The range must be reserved, inaccessible memory;
