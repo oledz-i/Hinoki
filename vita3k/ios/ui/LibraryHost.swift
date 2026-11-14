@@ -12,6 +12,23 @@ enum LibraryHost {
     static var window: UIWindow?
     static let model = LibraryModel()
 
+    /// RAM helpers on, but the container (LiveContainer/Strata) won't start them: say what to change,
+    /// once per kind of problem (it is also in Settings > Memory and the PS Vita home notices)
+    private static func showContainerHelperHintOnce() {
+        guard UserDefaults.standard.bool(forKey: "v3k.ramHelpers") else { return }
+        let hint = String(cString: v3k_ram_helpers_container_hint())
+        guard !hint.isEmpty else { return }
+        let key = "v3k.ramHelpers.containerHintShown.\(v3k_ram_helpers_container_setup())"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            guard let presenter = window?.rootViewController, presenter.presentedViewController == nil else { return }
+            UserDefaults.standard.set(true, forKey: key)
+            let alert = UIAlertController(title: "RAM helpers need a container setting", message: hint, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            presenter.present(alert, animated: true)
+        }
+    }
+
     static func show() {
         BackgroundMotion.shared.setActive(true)
         if window == nil {
@@ -59,6 +76,7 @@ enum LibraryHost {
         UIView.animate(withDuration: firstShow ? 0.35 : 0.2, delay: 0, options: [.curveEaseOut]) {
             window?.alpha = 1
         }
+        if firstShow { showContainerHelperHintOnce() }
         if firstShow && v3k_jit_can_request() {
             // Prepare JIT right away (StikDebug briefly pauses the app while it works), and start the
             // menu music only once that's done, so the music doesn't stutter as it begins

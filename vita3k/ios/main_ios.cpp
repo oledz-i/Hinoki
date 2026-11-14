@@ -223,6 +223,9 @@ int main(int argc, char *argv[]) {
     if (v3k_ram_helpers_enabled())
         LOG_INFO("RAM helpers: on, {} bundled{}", v3k_ram_helpers_bundled() ? "extension" : "extension NOT",
             v3k_ram_helpers_in_livecontainer() ? ", running inside LiveContainer" : "");
+    // Logged for every launch (helpers on or off): whether the container will start them
+    if (v3k_ram_helpers_in_livecontainer() && *v3k_ram_helpers_container_hint())
+        LOG_WARN("RAM helpers: {}", v3k_ram_helpers_container_hint());
     v3k_ram_helpers_prepare();
 
     auto *emuenv = ios::get_emuenv();

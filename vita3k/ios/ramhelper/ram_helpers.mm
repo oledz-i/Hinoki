@@ -23,12 +23,15 @@
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
 #import <mach/mach.h>
+#import <objc/runtime.h>
 #import <os/proc.h>
 #import <sys/mman.h>
 #import <xpc/xpc.h>
 
 #include <fmt/format.h>
+#include <util/address_space.h>
 
 // util/log.h can't be included next to Foundation (MacTypes' Ptr): logging goes through log.cpp
 extern "C" void v3k_ram_helpers_log(bool warning, const char *message);
@@ -245,6 +248,12 @@ bool start_helper() {
     std::lock_guard<std::mutex> start_guard(g_start_lock);
     if (start_blocked())
         return false;
+    if (const int setup = v3k_ram_helpers_container_setup(); setup == V3K_RAM_SETUP_SEPARATE_PROCESS || setup == V3K_RAM_SETUP_OPTION_OFF) {
+        // Asking iOS can't work here: say what to change instead of timing out over and over
+        set_status(v3k_ram_helpers_container_hint(), true);
+        g_permanent_failure = true;
+        return false;
+    }
     wait_out_jit_setup(200);
     const double started_at = NSDate.timeIntervalSinceReferenceDate;
     NSString *identifier = helper_identifier();
@@ -500,6 +509,53 @@ bool v3k_ram_helpers_in_livecontainer(void) {
     return getenv("LC_HOME_PATH") != nullptr || [NSBundle.mainBundle.bundlePath containsString:@"LiveContainer"];
 }
 
+// Inside a container app the helper is not installed with iOS: the container must start it for us.
+// LiveContainer (nightly 9d6ea09, 8 Nov 2026) and Strata 4.0 do that through hooks on NSExtension,
+// installed only when the app's "Helper Process Support" option is on AND the app runs in the
+// container's own process (not in a separate LiveProcess: Strata's seamless switching and its
+// full-screen built-in JIT launch apps there). Without the hooks iOS is asked for an extension it never
+// installed and gives up after ~4 s without an error, every time.
+int v3k_ram_helpers_container_setup(void) {
+    static const int state = [] {
+        if (!v3k_ram_helpers_in_livecontainer())
+            return V3K_RAM_SETUP_STANDALONE;
+        // The real executable (image 0) is LiveProcess.appex/LiveProcess in a separate process
+        const char *main_image = _dyld_get_image_name(0);
+        const bool live_process = main_image && strstr(main_image, ".appex/") != nullptr;
+        // Hooked: the class method's code is the container's, not iOS's
+        bool hooked = false;
+        if (!NSClassFromString(@"NSExtension"))
+            dlopen("/System/Library/Frameworks/ExtensionFoundation.framework/ExtensionFoundation", RTLD_LAZY | RTLD_GLOBAL);
+        if (Class cls = NSClassFromString(@"NSExtension")) {
+            if (Method m = class_getClassMethod(cls, @selector(extensionWithIdentifier:error:))) {
+                Dl_info info{};
+                if (dladdr(reinterpret_cast<const void *>(method_getImplementation(m)), &info) && info.dli_fname)
+                    hooked = strncmp(info.dli_fname, "/System/", 8) != 0 && strncmp(info.dli_fname, "/usr/lib/", 9) != 0;
+            }
+        }
+        RAM_LOG_INFO("container: {} process ({}), helper hooks {}", live_process ? "separate (LiveProcess)" : "the container's own",
+            main_image ? main_image : "?", hooked ? "installed" : "NOT installed");
+        if (hooked)
+            return V3K_RAM_SETUP_CONTAINER_READY;
+        return live_process ? V3K_RAM_SETUP_SEPARATE_PROCESS : V3K_RAM_SETUP_OPTION_OFF;
+    }();
+    return state;
+}
+
+const char *v3k_ram_helpers_container_hint(void) {
+    switch (v3k_ram_helpers_container_setup()) {
+    case V3K_RAM_SETUP_SEPARATE_PROCESS:
+        return "Hinoki is running in a separate process (LiveProcess), where your container can't start RAM helpers. "
+               "In Strata: turn on HostJIT-InProcess for Hinoki (Runtime Center > HostJIT) or turn off Seamless app switching, "
+               "and turn on Helper Process Support in Hinoki's app settings. Then launch Hinoki again.";
+    case V3K_RAM_SETUP_OPTION_OFF:
+        return "Your container isn't starting app helpers for Hinoki. Turn on Helper Process Support in Hinoki's app settings "
+               "(Strata 4.0 or newer, or a LiveContainer build from 8 Nov 2026 or newer), then launch Hinoki again.";
+    default:
+        return "";
+    }
+}
+
 uint64_t v3k_ram_helpers_back(void *host, uint64_t size, bool last) {
     if (!v3k_ram_helpers_enabled() || !host || size == 0)
         return 0;
@@ -669,6 +725,14 @@ uint64_t v3k_memory_available(void) {
 
 uint64_t v3k_memory_physical(void) {
     return NSProcessInfo.processInfo.physicalMemory;
+}
+
+bool v3k_extended_address_space(void) {
+    return address_space::extended();
+}
+
+uint64_t v3k_largest_free_address_mib(void) {
+    return address_space::largest_free_block_mib();
 }
 
 } // extern "C"

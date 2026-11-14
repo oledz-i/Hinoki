@@ -10,6 +10,7 @@ set(VITA3K_IOS_SWIFT_SOURCES
 	ios/ui/LibraryModel.swift
 	ios/ui/LibraryView.swift
 	ios/ui/SettingsView.swift
+	ios/ui/SetupCheckView.swift
 	ios/ui/TouchControls.swift
 	ios/ui/MenuMusic.swift
 	ios/ui/GameSettingsView.swift

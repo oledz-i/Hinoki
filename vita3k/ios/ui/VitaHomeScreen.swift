@@ -443,6 +443,10 @@ struct VitaHomeView: View {
         if model.jitPreparing { list.append("Preparing JIT (\(model.jitProgress)/\(model.jitTarget))…") }
         else if !model.jitEnabled { list.append(model.jitCanRequest ? "JIT is attached; it starts when you launch a game." : "JIT is off: \(model.jitStatus)") }
         if apps.isEmpty { list.append("No games yet. Open Content Manager to install some.") }
+        if UserDefaults.standard.bool(forKey: "v3k.ramHelpers") {
+            let hint = String(cString: v3k_ram_helpers_container_hint())
+            if !hint.isEmpty { list.append("RAM helpers: \(hint)") }
+        }
         return list
     }
 

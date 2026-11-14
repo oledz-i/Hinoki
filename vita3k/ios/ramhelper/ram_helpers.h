@@ -33,6 +33,17 @@ bool v3k_ram_helpers_bundled(void);
 // Running inside LiveContainer (it needs "helper processes" turned on for the app)
 bool v3k_ram_helpers_in_livecontainer(void);
 
+// Whether a container app (LiveContainer, Strata) will start the helpers for us
+enum {
+    V3K_RAM_SETUP_STANDALONE = 0, // not in a container: iOS starts them
+    V3K_RAM_SETUP_CONTAINER_READY = 1, // the container's helper hooks are installed
+    V3K_RAM_SETUP_SEPARATE_PROCESS = 2, // running in a LiveProcess: helpers can't start
+    V3K_RAM_SETUP_OPTION_OFF = 3, // the app's "Helper Process Support" option is off (or too old a container)
+};
+int v3k_ram_helpers_container_setup(void);
+// What to change in the container for helpers to work ("" when nothing)
+const char *v3k_ram_helpers_container_hint(void);
+
 // Backs [host, host + size) with helper memory, from the start, a chunk at a time; returns the bytes
 // backed (0 when off or no helper could lend any). The range must be reserved, inaccessible memory;
 // it stays inaccessible (the guest allocator opens pages as before). `last`: this is the last range of
@@ -57,6 +68,10 @@ const char *v3k_ram_helpers_status(void);
 uint64_t v3k_memory_footprint(void);
 uint64_t v3k_memory_available(void);
 uint64_t v3k_memory_physical(void);
+// The large address space (com.apple.developer.kernel.extended-virtual-addressing, or room measured)
+bool v3k_extended_address_space(void);
+// Largest free block of addresses right now, in MiB
+uint64_t v3k_largest_free_address_mib(void);
 
 #ifdef __cplusplus
 }

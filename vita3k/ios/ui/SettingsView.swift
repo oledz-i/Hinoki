@@ -665,6 +665,38 @@ struct AdhocSection: View {
 
 // MARK: - JIT, credits, about
 
+/// Inside LiveContainer/Strata the container starts the helpers: what (if anything) to change there
+struct ContainerHelperSetupNote: View {
+    static var placeDescription: String {
+        switch v3k_ram_helpers_container_setup() {
+        case Int32(V3K_RAM_SETUP_CONTAINER_READY): return "Container, helpers supported"
+        case Int32(V3K_RAM_SETUP_SEPARATE_PROCESS): return "Container, separate process"
+        case Int32(V3K_RAM_SETUP_OPTION_OFF): return "Container, helpers off"
+        default: return "Container"
+        }
+    }
+
+    var body: some View {
+        let hint = String(cString: v3k_ram_helpers_container_hint())
+        if !hint.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Your container needs a setting changed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.orange)
+                Text(hint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 2)
+        } else if v3k_ram_helpers_container_setup() == Int32(V3K_RAM_SETUP_CONTAINER_READY) {
+            Label("Your container supports RAM helpers", systemImage: "checkmark.circle.fill")
+                .font(.footnote)
+                .foregroundStyle(.green)
+        }
+    }
+}
+
 struct MemorySection: View {
     @AppStorage("v3k.ramHelpers") private var ramHelpers = false
     @AppStorage("v3k.ramHelpers.count") private var helperCount = 2
@@ -681,6 +713,7 @@ struct MemorySection: View {
                 Stepper(value: $helperCount, in: 1...4) {
                     LabeledContent("Helper processes", value: "\(helperCount)")
                 }
+                ContainerHelperSetupNote()
             }
             NavigationLink {
                 RAMCheckerView()
@@ -690,7 +723,7 @@ struct MemorySection: View {
         } header: {
             Text("Memory")
         } footer: {
-            Text("Helper processes, each with its own iOS memory limit, lend memory for the PS Vita's RAM, so big games are less likely to be closed by iOS. Takes effect at the next game launch. In LiveContainer, turn on helper processes in Hinoki's app settings there too. Some signers remove app extensions; the RAM checker shows whether the helper is there.")
+            Text("Helper processes, each with its own iOS memory limit, lend memory for the PS Vita's RAM, so big games are less likely to be closed by iOS. Takes effect at the next game launch. Some signers remove app extensions; the RAM checker shows whether the helper is there.")
         }
     }
 }
@@ -735,7 +768,8 @@ struct RAMCheckerView: View {
                     LabeledContent("Setting", value: ramHelpers ? "On" : "Off")
                     LabeledContent("Helper extension", value: v3k_ram_helpers_bundled() ? "Included" : "Missing")
                     if v3k_ram_helpers_in_livecontainer() {
-                        LabeledContent("Running in", value: "LiveContainer")
+                        LabeledContent("Running in", value: ContainerHelperSetupNote.placeDescription)
+                        ContainerHelperSetupNote()
                     }
                     LabeledContent("Helpers running", value: "\(v3k_ram_helpers_live())")
                     LabeledContent("Lent this game", value: mib(backed))
@@ -837,6 +871,11 @@ struct AboutSection: View {
                 .padding(.vertical, 6)
             LabeledContent("Version", value: appVersion)
             LabeledContent("Core", value: model.version)
+            NavigationLink {
+                SetupCheckView()
+            } label: {
+                Label("Setup check", systemImage: "stethoscope")
+            }
             ShareLink(item: URL(fileURLWithPath: String(cString: v3k_log_path()))) {
                 Label("Share log", systemImage: "square.and.arrow.up")
             }
